@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# codex++ 宿主机命令（第 1 阶段：up / down / doctor / url / logs / shell / status）
+# codex++ 宿主机命令。不带参数或直接写任务时进入交互流程（console.py）：
+#   codex++                     交互输入任务
+#   codex++ "任务内容"          ChatGPT 规划 → 你输入「执行」批准 → Codex 执行 → ChatGPT 审阅
+#   codex++ resume 任务ID       接着跑中断的任务
+# 其余为管理命令：up / down / doctor / url / logs / shell / status / task / chat …
 # 以 ubuntu 运行；不在 docker 组时自动加 sudo。
 set -euo pipefail
 NAME=${CODEXPP_CONTAINER:-codex-plus-plus}
@@ -10,7 +14,11 @@ D() { if docker info >/dev/null 2>&1; then docker "$@"; else sudo docker "$@"; f
 validate_mount_path() {
   case "$1" in *','*|*'='*|*'"'*|*$'\n'*|*$'\r'*) echo "路径包含Docker挂载分隔字符，拒绝启动"; exit 2 ;; esac
 }
-cmd=${1:-status}; shift || true
+case ${1:-} in
+  up|down|doctor|url|logs|shell|codex|codex-login|login|connect|browser-status|browser-stop|status|task|chat|sandbox-check|workspace|task-file) ;;
+  *) exec python3 "$ROOT/console.py" "$@" ;;
+esac
+cmd=$1; shift
 case $cmd in
   up)
     WS=${CODEXPP_WORKSPACE:?请显式设置CODEXPP_WORKSPACE为项目目录}
@@ -127,6 +135,10 @@ case $cmd in
   logs)   D exec "$NAME" sh -c 'tail -n 30 /data/state/bridge.log; echo ---; tail -n 30 /data/state/tunnel.log' ;;
   shell)  D exec -it "$NAME" bash ;;
   codex)  D exec -it "$NAME" codex "$@" ;;
+  workspace) D container inspect "$NAME" --format '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}' ;;
+  task-file)
+    [[ ${1:-} =~ ^[0-9a-f]{12}$ && ${2:-} =~ ^(plan|execution|review)(\.md|-submitted\.json)$ ]] || { echo "用法：codex++ task-file 任务ID 文件名"; exit 2; }
+    D exec "$NAME" cat "/data/tasks/$1/$2" ;;
   status) D ps --filter "name=$NAME" --format '{{.Names}}  {{.Status}}' ; D stats --no-stream --format '内存 {{.MemUsage}}' "$NAME" 2>/dev/null || true ;;
-  *) echo "用法：codex++ up|down|doctor|url [--full]|logs|shell|codex|codex-login|login|connect|browser-status|browser-stop|status|task|chat|sandbox-check"; exit 2 ;;
+  *) echo "用法：codex++ [\"任务\" | resume ID] | up|down|doctor|url [--full]|logs|shell|codex|codex-login|login|connect|browser-status|browser-stop|status|task|chat|sandbox-check|workspace|task-file"; exit 2 ;;
 esac

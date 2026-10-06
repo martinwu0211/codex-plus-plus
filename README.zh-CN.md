@@ -45,18 +45,28 @@ CODEXPP_PROJECT_ROOT=/path/to/projects CODEXPP_WORKSPACE=/path/to/projects/demo 
 ./codex++ doctor           # 检查运行状态和协议
 ```
 
-跑一个任务：
+跑一个任务，直接输入 `codex++`：
 
 ```bash
-./codex++ task new '给导出脚本加一个 --dry-run 参数'   # 会输出任务编号 ID
-./codex++ chat start ID plan && ./codex++ chat wait ID plan
-./codex++ task show-plan ID                 # 查看计划和它的 sha256
-./codex++ task approve ID --hash SHA256
-./codex++ task execute ID
-./codex++ chat start ID review && ./codex++ chat wait ID review
-./codex++ task accept ID                    # 看完审阅意见再验收
-./codex++ browser-stop
+ln -s "$PWD/codex++" ~/.local/bin/codex++     # 只做一次，之后在任何目录都能用 codex++
+codex++ '给导出脚本加一个 --dry-run 参数'
 ```
+
+ChatGPT 写好计划后，codex++ 会把计划完整显示出来。输入「执行」就批准这份计划，输入别的内容则保留任务、直接退出。批准后 Codex 在容器里执行一次，执行完由 ChatGPT 审阅结果。只输入 `codex++` 不带内容，会提示你输入任务。中途断了，用 `codex++ resume 任务ID` 接着跑。原来的 `codex` 命令不受影响。
+
+<details><summary>分步命令（<code>codex++ "任务"</code> 自动做的就是这些）</summary>
+
+```bash
+codex++ task new '给导出脚本加一个 --dry-run 参数'   # 会输出任务编号 ID
+codex++ chat start ID plan && codex++ chat wait ID plan
+codex++ task show-plan ID                 # 查看计划和它的 sha256
+codex++ task approve ID --hash SHA256
+codex++ task execute ID
+codex++ chat start ID review && codex++ chat wait ID review
+codex++ task accept ID                    # 看完审阅意见再验收
+codex++ browser-stop
+```
+</details>
 
 每个人登录自己的 Codex 和 ChatGPT 账号，仓库里不含任何登录数据。
 

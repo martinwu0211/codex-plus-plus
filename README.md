@@ -45,18 +45,28 @@ CODEXPP_PROJECT_ROOT=/path/to/projects CODEXPP_WORKSPACE=/path/to/projects/demo 
 ./codex++ doctor           # health and protocol checks
 ```
 
-Run a task:
+Run a task — just type `codex++`:
 
 ```bash
-./codex++ task new 'Add a --dry-run flag to the export script'   # prints a task ID
-./codex++ chat start ID plan && ./codex++ chat wait ID plan
-./codex++ task show-plan ID                 # read the plan and its sha256
-./codex++ task approve ID --hash SHA256
-./codex++ task execute ID
-./codex++ chat start ID review && ./codex++ chat wait ID review
-./codex++ task accept ID                    # only after you have read the review
-./codex++ browser-stop
+ln -s "$PWD/codex++" ~/.local/bin/codex++     # once, so `codex++` works from anywhere
+codex++ 'Add a --dry-run flag to the export script'
 ```
+
+ChatGPT writes the plan and codex++ prints it. Type `执行` ("execute") to approve that exact plan; anything else keeps the task and exits. Codex then runs it once in the container, and ChatGPT reviews the result. Run `codex++` with no argument to be prompted for the task. If anything is interrupted, continue with `codex++ resume TASK_ID`. Your normal `codex` command is not touched.
+
+<details><summary>Step-by-step commands (what <code>codex++ "task"</code> does for you)</summary>
+
+```bash
+codex++ task new 'Add a --dry-run flag to the export script'   # prints a task ID
+codex++ chat start ID plan && codex++ chat wait ID plan
+codex++ task show-plan ID                 # read the plan and its sha256
+codex++ task approve ID --hash SHA256
+codex++ task execute ID
+codex++ chat start ID review && codex++ chat wait ID review
+codex++ task accept ID                    # only after you have read the review
+codex++ browser-stop
+```
+</details>
 
 Each user logs in to their own Codex and ChatGPT accounts. The repository contains no login data.
 
