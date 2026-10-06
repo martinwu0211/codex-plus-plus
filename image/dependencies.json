@@ -1,0 +1,13 @@
+{
+  "platform": "linux/amd64",
+  "base_image": "node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c",
+  "codex_version": "0.160.0",
+  "cloudflared": {
+    "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.9.3/cloudflared-linux-amd64.deb",
+    "sha256": "bc073ef293d504cf5ac533bd0aa1c824ef6b4f358765ccaa6628a8a95cacb4b7"
+  },
+  "chrome": {
+    "url": "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_154.0.8037.97-1_amd64.deb",
+    "sha256": "a4edbe95e9b01db6c9b97d7a1323121eda18362b5620df06abac1b59bee80053"
+  }
+}

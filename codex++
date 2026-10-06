@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# codex++ 宿主机命令（第 1 阶段：up / down / doctor / url / logs / shell / status）
+# 以 ubuntu 运行；不在 docker 组时自动加 sudo。
+set -euo pipefail
+NAME=${CODEXPP_CONTAINER:-codex-plus-plus}
+IMAGE=${CODEXPP_IMAGE:-codex-plus-plus:latest}
+VOL=${CODEXPP_VOLUME:-codexpp-data}
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+D() { if docker info >/dev/null 2>&1; then docker "$@"; else sudo docker "$@"; fi; }
+validate_mount_path() {
+  case "$1" in *','*|*'='*|*'"'*|*$'\n'*|*$'\r'*) echo "路径包含Docker挂载分隔字符，拒绝启动"; exit 2 ;; esac
+}
+cmd=${1:-status}; shift || true
+case $cmd in
+  up)
+    WS=${CODEXPP_WORKSPACE:?请显式设置CODEXPP_WORKSPACE为项目目录}
+    WS=$(realpath "$WS")
+    [[ -d $WS ]] || { echo "工作区不存在"; exit 2; }
+    [[ $WS != / && $WS != /home && $WS != /root && $WS != "$HOME" && $(dirname "$WS") != /home ]] || { echo "禁止把账户目录或系统根目录作为工作区"; exit 2; }
+    PROJECTS=$(realpath "${CODEXPP_PROJECT_ROOT:?请显式设置CODEXPP_PROJECT_ROOT为项目白名单目录}")
+    case "$PROJECTS/" in /|/etc/*|/run/*|/var/*|/usr/*|/proc/*|/sys/*|/dev/*|*/.*/*) echo "项目根目录不能是系统或隐藏目录"; exit 2 ;; esac
+    [[ $PROJECTS != / && $PROJECTS != /tmp && $PROJECTS != /srv && "$HOME/" != "$PROJECTS/"* && $(dirname "$PROJECTS") != /home && $PROJECTS != /home && $PROJECTS != /root ]] || { echo "项目白名单不能包含账户或共享临时根目录"; exit 2; }
+    [[ $WS == "$PROJECTS" || $WS == "$PROJECTS/"* ]] || { echo "工作区不在CODEXPP_PROJECT_ROOT项目白名单内"; exit 2; }
+    case "$WS/" in */.*/*) echo "工作区不能是隐藏的凭据目录"; exit 2 ;; esac
+    [[ $WS != "$ROOT" && $WS != "$ROOT/"* && $ROOT != "$WS/"* ]] || { echo "工作区不能与codex++宿主脚本及策略目录重叠"; exit 2; }
+    policy=$(realpath "${CODEXPP_SECCOMP_PROFILE:-$ROOT/security/codexpp-seccomp.json}")
+    for checked_path in "$WS" "$PROJECTS" "$policy"; do validate_mount_path "$checked_path"; done
+    [[ $policy != "$WS/"* ]] || { echo "安全策略不能放在可写工作区中"; exit 2; }
+    docker_version=$(D version --format '{{.Server.Version}}')
+    docker_major=${docker_version%%.*}
+    [[ $docker_major =~ ^[0-9]+$ && $docker_major -ge 28 ]] || { echo "需要Docker 28或以上版本"; exit 2; }
+    [[ $(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || true) == Y ]] || { echo "需要启用AppArmor并加载项目安全策略"; exit 2; }
+    [[ ${CODEXPP_APPARMOR_PROFILE:-codexpp-sandbox} != unconfined ]] || { echo "禁止禁用项目AppArmor策略"; exit 2; }
+    HOST_LOCK=${CODEXPP_HOST_LOCK:-/run/lock/browser-fleet/chrome.lock}
+    validate_mount_path "$HOST_LOCK"
+    [[ $(realpath "$(dirname "$HOST_LOCK")") == /run/lock/browser-fleet && ! -L $(dirname "$HOST_LOCK") ]] || { echo "共享锁必须位于专用/run/lock/browser-fleet目录"; exit 2; }
+    [[ -f $HOST_LOCK ]] || { echo "缺少共享Chrome锁文件：$HOST_LOCK"; exit 2; }
+    [[ ! -L $HOST_LOCK ]] || { echo "共享锁不能是符号链接"; exit 2; }
+    extra=(--mount "type=bind,src=$(dirname "$HOST_LOCK"),dst=/run/lock/browser-fleet,readonly"
+           -e "CODEXPP_CHROME_LOCK=/run/lock/browser-fleet/$(basename "$HOST_LOCK")")
+    network=${CODEXPP_NETWORK:-bridge}
+    [[ $network == bridge || $network == host ]] || { echo "CODEXPP_NETWORK只允许bridge或host"; exit 2; }
+    if [[ $network == bridge ]]; then
+      isolated_network=${CODEXPP_DOCKER_NETWORK:-$NAME-net}
+      if D network inspect "$isolated_network" >/dev/null 2>&1; then
+        [[ $(D network inspect "$isolated_network" --format '{{index .Labels "com.codexpp.container"}}') == "$NAME" ]] || { echo "网络不属于本项目容器"; exit 2; }
+      else
+        D network create --label "com.codexpp.container=$NAME" "$isolated_network" >/dev/null
+      fi
+      network=$isolated_network
+      extra+=(-p "127.0.0.1:${CODEXPP_NOVNC_PORT:-6082}:${CODEXPP_NOVNC_PORT:-6082}" -e CODEXPP_WEB_BIND=0.0.0.0)
+    fi
+    if [[ ${CODEXPP_EXTERNAL_DISPLAY:-0} == 1 ]]; then
+      [[ -S /tmp/.X11-unix/X99 ]] || { echo "要求的X99桌面不存在"; exit 2; }
+      extra+=(--mount type=bind,src=/tmp/.X11-unix/X99,dst=/tmp/.X11-unix/X99,readonly -e DISPLAY=:99 -e CODEXPP_EXTERNAL_DISPLAY=1)
+    fi
+    [[ -z ${CODEXPP_TUNNEL_DIR:-} ]] || { echo "不支持挂载整个隧道目录；请指定独立配置与凭据文件"; exit 2; }
+    tunnel_mode=${TUNNEL_MODE:-quick}
+    [[ $tunnel_mode == quick || $tunnel_mode == named ]] || { echo "TUNNEL_MODE只允许quick或named"; exit 2; }
+    if [[ $tunnel_mode == named ]]; then
+      config=$(realpath "${CODEXPP_TUNNEL_CONFIG:?named模式需要CODEXPP_TUNNEL_CONFIG}")
+      credential=$(realpath "${CODEXPP_TUNNEL_CREDENTIAL:?named模式需要CODEXPP_TUNNEL_CREDENTIAL}")
+      validate_mount_path "$config"; validate_mount_path "$credential"
+      [[ -f $config && -f $credential && $config == *.yml && $credential == *.json ]] || { echo "隧道只允许独立yml配置与json凭据"; exit 2; }
+      extra+=(--mount "type=bind,src=$config,dst=/run/secrets/tunnel/config.yml,readonly" --mount "type=bind,src=$credential,dst=/run/secrets/tunnel/credentials.json,readonly")
+    fi
+    [[ -n ${PUBLIC_URL:-} ]] && extra+=(-e "PUBLIC_URL=$PUBLIC_URL")
+    # 只查容器：docker inspect 也会匹配到同名镜像（10-05 因此误判「已在运行」）
+    D container inspect "$NAME" >/dev/null 2>&1 && { echo "已在运行（先 codex++ down）"; exit 0; }
+    [[ -f $policy ]] || { echo "缺少Codex沙箱策略：$policy"; exit 2; }
+    extra+=(--security-opt "seccomp=$policy")
+    if [[ $(cat /sys/module/apparmor/parameters/enabled 2>/dev/null || true) == Y ]]; then
+      extra+=(--security-opt "apparmor=${CODEXPP_APPARMOR_PROFILE:-codexpp-sandbox}")
+    fi
+    # Prefer Docker bridge isolation; host mode is an explicit trusted-host fallback.
+    D run -d --name "$NAME" --restart unless-stopped --stop-timeout 75 --memory "${CODEXPP_MEMORY:-1500m}" \
+      --network "$network" --cap-drop ALL --security-opt no-new-privileges=true --pids-limit 512 \
+      -e MCP_PORT="${CODEXPP_PORT:-48771}" \
+      -e MCP_DENY_NAMES="${MCP_DENY_NAMES:-}" \
+      -e CODEXPP_CDP_PORT="${CODEXPP_CDP_PORT:-9224}" \
+      -e CODEXPP_VNC_PORT="${CODEXPP_VNC_PORT:-5902}" \
+      -e CODEXPP_NOVNC_PORT="${CODEXPP_NOVNC_PORT:-6082}" \
+      -e CODEXPP_EXEC_TIMEOUT="${CODEXPP_EXEC_TIMEOUT:-240}" \
+      -e CODEXPP_MODEL="${CODEXPP_MODEL:-gpt-6-sol}" \
+      -e CODEXPP_BROWSER_LIFETIME="${CODEXPP_BROWSER_LIFETIME:-1800}" \
+      -e CODEXPP_LOCK_WAIT="${CODEXPP_LOCK_WAIT:-1800}" \
+      --mount "type=bind,src=$WS,dst=/workspace" -v "$VOL":/data -e TUNNEL_MODE="${TUNNEL_MODE:-quick}" \
+      "${extra[@]}" \
+      "$IMAGE" >/dev/null
+    echo "已启动，工作区 $WS。等待公网地址……"
+    for _ in $(seq 60); do u=$(D exec "$NAME" cat /data/state/public_url 2>/dev/null || true); [[ -n $u ]] && break; sleep 1; done
+    echo "MCP 公网地址：${u:-（还没就绪，稍后 codex++ url）}/mcp/<密钥>    完整地址：codex++ url --full"
+    ;;
+  down)
+    if D container inspect "$NAME" >/dev/null 2>&1; then
+      D exec "$NAME" python3 /opt/codexpp/bin/browser.py stop >/dev/null || true
+      D rm -f "$NAME" >/dev/null
+      echo "已停止（数据卷 $VOL 保留）"
+    else echo "没有在运行"; fi
+    isolated_network=${CODEXPP_DOCKER_NETWORK:-$NAME-net}
+    if [[ $(D network inspect "$isolated_network" --format '{{index .Labels "com.codexpp.container"}}' 2>/dev/null || true) == "$NAME" ]]; then
+      D network rm "$isolated_network" >/dev/null 2>&1 || true
+    fi ;;
+  login|connect)
+    page=https://chatgpt.com/
+    if [[ $cmd == connect ]]; then
+      D exec "$NAME" python3 /opt/codexpp/bin/browser.py stop >/dev/null
+      page='https://chatgpt.com/plugins'
+    fi
+    D exec "$NAME" python3 /opt/codexpp/bin/browser.py start --url "$page"
+    echo "浏览器按全机锁排队启动。请在远程桌面操作；结束后运行 codex++ browser-stop。"
+    if [[ $cmd == connect ]]; then
+      echo "插件目录 Add → Create custom MCP server；真实 workspace_info 调用验收后才视为已连接。"
+    fi
+    ;;
+  browser-status|browser-stop)
+    action=status; [[ $cmd == browser-stop ]] && action=stop
+    D exec "$NAME" python3 /opt/codexpp/bin/browser.py "$action" ;;
+  codex-login) D exec -it "$NAME" codex login --device-auth ;;
+  task) D exec "$NAME" python3 /opt/codexpp/bin/workflow.py "$@" ;;
+  chat) D exec "$NAME" python3 /opt/codexpp/bin/chat_task.py "$@" ;;
+  sandbox-check) D exec "$NAME" python3 /opt/codexpp/bin/check_sandbox.py ;;
+  doctor) D exec "$NAME" python3 /opt/codexpp/bin/doctor.py ;;
+  url)
+    u=$(D exec "$NAME" cat /data/state/public_url); s=$(D exec "$NAME" cat /data/state/mcp.secret)
+    if [[ ${1:-} == --full ]]; then echo "$u/mcp/$s"; else echo "$u/mcp/<secret>"; fi ;;
+  logs)   D exec "$NAME" sh -c 'tail -n 30 /data/state/bridge.log; echo ---; tail -n 30 /data/state/tunnel.log' ;;
+  shell)  D exec -it "$NAME" bash ;;
+  codex)  D exec -it "$NAME" codex "$@" ;;
+  status) D ps --filter "name=$NAME" --format '{{.Names}}  {{.Status}}' ; D stats --no-stream --format '内存 {{.MemUsage}}' "$NAME" 2>/dev/null || true ;;
+  *) echo "用法：codex++ up|down|doctor|url [--full]|logs|shell|codex|codex-login|login|connect|browser-status|browser-stop|status|task|chat|sandbox-check"; exit 2 ;;
+esac

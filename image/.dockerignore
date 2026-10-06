@@ -1,0 +1,11 @@
+**/__pycache__
+**/*.py[cod]
+**/.env*
+**/*.secret
+**/auth.json
+**/credentials.json
+**/*.log
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx

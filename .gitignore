@@ -1,0 +1,33 @@
+# Account state and task artifacts never belong in the source repository.
+.codexpp/
+.local/
+.claude/
+data/
+state/
+chrome-profile/
+codex-home/
+browser_profile/
+__pycache__/
+*.py[cod]
+*.log
+.env
+.env.*
+!.env.example
+auth.json
+credentials.json
+*.secret
+*.pem
+*.key
+*.p12
+*.pfx
+# Local deployment history from the original MVP; retain on disk only.
+/PHASE*.md
+/PHASE*.json
+/RUNTIME_MIGRATION.json
+/CODEX_REVIEW_*.md
+/PLAN.md
+/migrate_sandbox.py
+/sandbox_probe.py
+docs/audit/*.running
+docs/audit/*.status.json
+docs/audit/CLAUDE_*.md
